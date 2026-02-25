@@ -1,6 +1,8 @@
 import google.generativeai as genai
 import os
 import json
+import ast
+from datetime import datetime
 
 def configure_gemini(api_key):
     """Configures the Gemini API with the provided key."""
@@ -26,30 +28,36 @@ def extract_invoice_data(content, mime_type="image/jpeg"):
     """
     model = genai.GenerativeModel('gemini-2.5-flash')
     
-    if mime_type.startswith("audio/"):
-        prompt = """
+    if mime_type == "video/mp4":
+        mime_type = "audio/mp4" # Force audio processing for MP4 voice notes
+        
+    if mime_type.startswith("audio/") or mime_type == "audio/mp4":
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        prompt = f"""
         You are an expert financial assistant processing a voice note for an invoice.
+        TODAY'S DATE: {current_date}
         
         Crucial: Extract only the following three key details relative to the service provided:
         1. CLIENT NAME (Who is the invoice for?)
         2. ITEMS/SERVICES (What was provided? quantity? price per unit?)
         3. TOTAL AMOUNT (If manually stated, otherwise assume unit_price * quantity)
+        4. DATE (If explicitly mentioned, use it. If NOT mentioned, use TODAY'S DATE: {current_date})
 
         Output strict JSON:
-        {
+        {{
             "client_name": "Name of Client",
             "date": "YYYY-MM-DD",
             "invoice_number": "DRAFT-00X",
             "items": [
-                {
+                {{
                     "description": "Clear description of service/product",
                     "quantity": number (default 1),
                     "unit_price": number,
                     "total": number
-                }
+                }}
             ],
             "total_amount": number
-        }
+        }}
         
         Ignore conversational filler. If the user says "factura para Pepsi", the client is Pepsi.
         """
@@ -76,12 +84,22 @@ def extract_invoice_data(content, mime_type="image/jpeg"):
         
         # Clean response text to ensure valid JSON
         text = response.text.strip()
-        if text.startswith("```json"):
-            text = text[7:-3]
-        elif text.startswith("```"):
-            text = text[3:-3]
+        
+        # Remove markdown code blocks if present
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].strip()
             
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Fallback: Try analyzing as Python literal (handles single quotes/trailing commas)
+            try:
+                return ast.literal_eval(text)
+            except Exception:
+                raise ValueError(f"Could not parse response: {text[:100]}...")
+                
     except Exception as e:
         return {"error": str(e)}
 
@@ -103,7 +121,6 @@ def compare_documents(invoice_text, delivery_note_text):
     
     Output a summary of discrepancies or "No discrepancies found".
     """
-    
     try:
         response = model.generate_content(prompt)
         return response.text
